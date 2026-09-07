@@ -15,7 +15,6 @@ export interface SyncDetailRow {
   dataSource: string;
   dataStore: string;
   locationId: number;
-  readInventoryScope: boolean;
   note: string;
   variantModifiedOn: string | null;
 }
@@ -62,7 +61,6 @@ function toDetailRow(
     dataSource: read.source,
     dataStore: read.dataStore,
     locationId: read.locationId,
-    readInventoryScope: read.readInventoryScope,
     note: read.note,
     variantModifiedOn: read.variantModifiedOn,
   };

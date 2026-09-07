@@ -46,7 +46,7 @@ export async function GET(request: NextRequest): Promise<NextResponse> {
       success: true,
       mode: "polling",
       dataFlow:
-        "Đọc tồn phôi từ Sapo Omni Admin API → cập nhật variant thành phẩm trên Sapo Web (1:1)",
+        "Đọc tồn phôi qua GET /admin/variants/{id}.json (inventory_quantity) → cập nhật thành phẩm 1:1 trên Sapo Web",
       scannedPhoi: result.scanned,
       updatedRetailVariants: result.synced,
       details: result.details,
