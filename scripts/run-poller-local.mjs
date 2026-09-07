@@ -50,7 +50,7 @@ async function run() {
 
     scanned += 1;
     const available = Number(phoi.inventory_quantity ?? 0);
-    const target = available <= 0 ? 0 : 9999;
+    const target = Math.max(0, Math.floor(Number(phoi.inventory_quantity ?? 0)));
     const retailData = await sapo(`/admin/variants.json?query=${encodeURIComponent(phoiSku)}&limit=250`);
     const retail = (retailData.variants || []).filter(
       (v) => v.sku?.endsWith(`_${phoiSku}`) && v.sku !== phoiSku,

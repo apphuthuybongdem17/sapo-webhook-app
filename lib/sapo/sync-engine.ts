@@ -1,15 +1,16 @@
 import { findRetailVariantsByPhoiSku, setVariantInventory } from "./web-client";
 import type { SapoVariant } from "./types";
 
-export const STOCK_OPEN_QUANTITY = 9999;
-export const STOCK_CLOSED_QUANTITY = 0;
-
 export function isPhoiSku(sku: string): boolean {
   return sku.length > 0 && !sku.includes("_");
 }
 
 export function resolveTargetQuantity(available: number): number {
-  return available <= 0 ? STOCK_CLOSED_QUANTITY : STOCK_OPEN_QUANTITY;
+  const qty = Number(available);
+  if (!Number.isFinite(qty) || qty <= 0) {
+    return 0;
+  }
+  return Math.floor(qty);
 }
 
 export async function syncPhoiToRetailVariants(
@@ -49,18 +50,32 @@ export async function syncPhoiToRetailVariants(
 
 export async function syncPhoiVariantRecord(
   phoiVariant: SapoVariant,
-): Promise<{ updated: number; phoiSku: string; targetQuantity: number }> {
+): Promise<{
+  updated: number;
+  phoiSku: string;
+  phoiAvailable: number;
+  targetQuantity: number;
+  retailSkus: string[];
+}> {
   const phoiSku = phoiVariant.sku?.trim() ?? "";
   const available = Number(phoiVariant.inventory_quantity ?? 0);
 
   if (!isPhoiSku(phoiSku)) {
-    return { updated: 0, phoiSku, targetQuantity: STOCK_CLOSED_QUANTITY };
+    return {
+      updated: 0,
+      phoiSku,
+      phoiAvailable: available,
+      targetQuantity: 0,
+      retailSkus: [],
+    };
   }
 
   const result = await syncPhoiToRetailVariants(phoiSku, available);
   return {
     updated: result.updated,
     phoiSku,
+    phoiAvailable: available,
     targetQuantity: result.targetQuantity,
+    retailSkus: result.retailSkus,
   };
 }

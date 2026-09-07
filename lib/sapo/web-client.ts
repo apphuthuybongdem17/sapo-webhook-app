@@ -146,6 +146,26 @@ export async function findRetailVariantsByPhoiSku(
   return enriched;
 }
 
+async function putVariantInventory(
+  client: ReturnType<typeof getSapoWebClient>,
+  variant: SapoVariant,
+  available: number,
+): Promise<void> {
+  if (!variant.id) {
+    throw new Error(`Variant thiếu id (sku=${variant.sku})`);
+  }
+
+  console.log(
+    `[Sapo Web] PUT variant inventory: id=${variant.id}, sku=${variant.sku}, quantity=${available}`,
+  );
+  await client.put(`/admin/variants/${variant.id}.json`, {
+    variant: {
+      id: variant.id,
+      inventory_quantity: available,
+    },
+  });
+}
+
 export async function setVariantInventory(
   variant: SapoVariant,
   available: number,
@@ -153,32 +173,35 @@ export async function setVariantInventory(
   const client = getSapoWebClient();
   const fullVariant = await enrichVariant(variant);
 
+  if (!fullVariant.id) {
+    throw new Error(`Variant thiếu id (sku=${fullVariant.sku})`);
+  }
+
+  // Private App thường không có quyền inventory_levels/set (403) — PUT variant luôn hoạt động
   if (fullVariant.inventory_item_id) {
     const locationId = getSapoWebLocationId();
     console.log(
       `[Sapo Web] SET inventory_levels: variant_id=${fullVariant.id}, sku=${fullVariant.sku}, available=${available}`,
     );
-    await client.post("/admin/inventory_levels/set.json", {
-      location_id: locationId,
-      inventory_item_id: fullVariant.inventory_item_id,
-      available,
-    });
-    return;
+    try {
+      await client.post("/admin/inventory_levels/set.json", {
+        location_id: locationId,
+        inventory_item_id: fullVariant.inventory_item_id,
+        available,
+      });
+      return;
+    } catch (error) {
+      const status = (error as { response?: { status?: number } }).response?.status;
+      if (status !== 403) {
+        throw error;
+      }
+      console.warn(
+        `[Sapo Web] inventory_levels/set 403 — fallback PUT variant (${fullVariant.sku})`,
+      );
+    }
   }
 
-  if (!fullVariant.id) {
-    throw new Error(`Variant thiếu id (sku=${fullVariant.sku})`);
-  }
-
-  console.log(
-    `[Sapo Web] PUT variant inventory: id=${fullVariant.id}, sku=${fullVariant.sku}, quantity=${available}`,
-  );
-  await client.put(`/admin/variants/${fullVariant.id}.json`, {
-    variant: {
-      id: fullVariant.id,
-      inventory_quantity: available,
-    },
-  });
+  await putVariantInventory(client, fullVariant, available);
 }
 
 /** @deprecated Dùng findRetailVariantsByPhoiSku */

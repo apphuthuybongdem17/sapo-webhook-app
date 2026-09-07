@@ -1,11 +1,24 @@
-import { getSapoWebClient } from "./web-client";
 import {
-  isPhoiSku,
-  syncPhoiVariantRecord,
-} from "./sync-engine";
-import type { SapoVariant, SapoVariantsResponse } from "./types";
+  fetchPhoiAvailableQuantity,
+  type PhoiInventoryReadResult,
+} from "./phoi-inventory-source";
+import { syncPhoiToRetailVariants } from "./sync-engine";
 
 const DEFAULT_WATCH_PHOI_SKUS = "dtbvc-T-12p,vmln-C-1";
+
+export interface SyncDetailRow {
+  phoiSku: string;
+  phoiAvailable: number;
+  targetQuantity: number;
+  updated: number;
+  retailSkus: string[];
+  dataSource: string;
+  dataStore: string;
+  locationId: number;
+  readInventoryScope: boolean;
+  note: string;
+  variantModifiedOn: string | null;
+}
 
 function getWatchPhoiSkus(): Set<string> | null {
   const raw =
@@ -21,65 +34,68 @@ function getWatchPhoiSkus(): Set<string> | null {
   );
 }
 
-async function fetchVariantBySku(sku: string): Promise<SapoVariant | null> {
-  const client = getSapoWebClient();
-  const { data } = await client.get<SapoVariantsResponse>(
-    `/admin/variants.json?query=${encodeURIComponent(sku)}&limit=10`,
-  );
-  const variants = data.variants ?? [];
-  return variants.find((v) => v.sku?.trim() === sku) ?? null;
+async function syncOnePhoiSku(
+  phoiSku: string,
+): Promise<{ read: PhoiInventoryReadResult; sync: Awaited<ReturnType<typeof syncPhoiToRetailVariants>> }> {
+  const read = await fetchPhoiAvailableQuantity(phoiSku);
+  if (read.source === "not_found") {
+    return {
+      read,
+      sync: { updated: 0, targetQuantity: 0, retailSkus: [] },
+    };
+  }
+
+  const sync = await syncPhoiToRetailVariants(phoiSku, read.available);
+  return { read, sync };
 }
 
-async function fetchPhoiVariantsPage(page: number): Promise<SapoVariant[]> {
-  const client = getSapoWebClient();
-  const { data } = await client.get<SapoVariantsResponse>(
-    `/admin/variants.json?limit=250&page=${page}`,
-  );
-  return data.variants ?? [];
+function toDetailRow(
+  read: PhoiInventoryReadResult,
+  sync: Awaited<ReturnType<typeof syncPhoiToRetailVariants>>,
+): SyncDetailRow {
+  return {
+    phoiSku: read.phoiSku,
+    phoiAvailable: read.available,
+    targetQuantity: sync.targetQuantity,
+    updated: sync.updated,
+    retailSkus: sync.retailSkus,
+    dataSource: read.source,
+    dataStore: read.dataStore,
+    locationId: read.locationId,
+    readInventoryScope: read.readInventoryScope,
+    note: read.note,
+    variantModifiedOn: read.variantModifiedOn,
+  };
 }
 
 async function syncWatchList(
   watchList: Set<string>,
-): Promise<{
-  scanned: number;
-  synced: number;
-  details: Array<{ phoiSku: string; updated: number; targetQuantity: number }>;
-}> {
-  const details: Array<{ phoiSku: string; updated: number; targetQuantity: number }> = [];
+): Promise<{ scanned: number; synced: number; details: SyncDetailRow[] }> {
+  const details: SyncDetailRow[] = [];
   let scanned = 0;
   let synced = 0;
 
   for (const sku of Array.from(watchList)) {
-    const variant = await fetchVariantBySku(sku);
-    if (!variant) {
-      console.warn(`[Poller] Không tìm thấy phôi SKU: ${sku}`);
-      details.push({ phoiSku: sku, updated: 0, targetQuantity: 0 });
-      continue;
+    const { read, sync } = await syncOnePhoiSku(sku);
+    if (read.source !== "not_found") {
+      scanned += 1;
     }
-
-    scanned += 1;
-    const result = await syncPhoiVariantRecord(variant);
-    if (result.updated > 0) {
-      synced += result.updated;
+    if (sync.updated > 0) {
+      synced += sync.updated;
     }
-    details.push({
-      phoiSku: result.phoiSku,
-      updated: result.updated,
-      targetQuantity: result.targetQuantity,
-    });
+    details.push(toDetailRow(read, sync));
   }
 
   return { scanned, synced, details };
 }
 
 /**
- * Quét variant phôi và sync thành phẩm đuôi _{phoiSku}.
- * Mặc định chỉ quét WATCH_PHOI_SKUS (nhanh, <15s). Đặt WATCH_PHOI_SKUS=* để quét full catalog.
+ * Quét phôi từ Sapo Omni API → sync thành phẩm trên Sapo Web (1:1 số lượng).
  */
 export async function pollAndSyncAllPhoi(): Promise<{
   scanned: number;
   synced: number;
-  details: Array<{ phoiSku: string; updated: number; targetQuantity: number }>;
+  details: SyncDetailRow[];
 }> {
   const watchList = getWatchPhoiSkus();
 
@@ -92,13 +108,21 @@ export async function pollAndSyncAllPhoi(): Promise<{
     return result;
   }
 
-  const details: Array<{ phoiSku: string; updated: number; targetQuantity: number }> = [];
+  // Full scan vẫn dùng Web catalog để liệt kê phôi, nhưng tồn đọc qua Omni source
+  const { getSapoWebClient } = await import("./web-client");
+  const { isPhoiSku } = await import("./sync-engine");
+  const client = getSapoWebClient();
+
+  const details: SyncDetailRow[] = [];
   let scanned = 0;
   let synced = 0;
   const maxPages = Number(process.env.POLL_MAX_PAGES ?? "5");
 
   for (let page = 1; page <= maxPages; page += 1) {
-    const variants = await fetchPhoiVariantsPage(page);
+    const { data } = await client.get<{ variants?: Array<{ sku?: string }> }>(
+      `/admin/variants.json?limit=250&page=${page}`,
+    );
+    const variants = data.variants ?? [];
     if (!variants.length) {
       break;
     }
@@ -110,15 +134,11 @@ export async function pollAndSyncAllPhoi(): Promise<{
       }
 
       scanned += 1;
-      const result = await syncPhoiVariantRecord(variant);
-      if (result.updated > 0) {
-        synced += result.updated;
+      const { read, sync } = await syncOnePhoiSku(sku);
+      if (sync.updated > 0) {
+        synced += sync.updated;
       }
-      details.push({
-        phoiSku: result.phoiSku,
-        updated: result.updated,
-        targetQuantity: result.targetQuantity,
-      });
+      details.push(toDetailRow(read, sync));
     }
 
     if (variants.length < 250) {

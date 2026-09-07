@@ -27,6 +27,7 @@ export interface SapoVariant {
   sku?: string;
   inventory_item_id?: number;
   inventory_quantity?: number;
+  modified_on?: string;
 }
 
 export interface SapoVariantsResponse {
